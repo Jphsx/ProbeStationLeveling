@@ -3,6 +3,7 @@ import serial
 import threading
 import motion
 import time
+import numpy as np
 
 # Adjust your serial port and baud rate
 SERIAL_PORT = 'COM5'
@@ -135,7 +136,14 @@ class App(tk.Tk):
         btn_single_trial = tk.Button(trial_btn_frame, text="position ensemble", width=20, command=lambda: self.run_position_ensemble(1))
         btn_single_trial.pack(pady=5)
         
+        btn_lr_trial = tk.Button(trial_btn_frame, text="LR asymmetry", width=20, command=lambda: self.run_LR_measurements(1))
+        btn_lr_trial.pack(pady=5)
+        
         self.final_positions = []
+        self.final_positionsR = []
+        self.final_positionsL = []
+        
+        self.LRmovement = 23.0
 
         self.arduino.interrupt_callback = self.on_interrupt
 
@@ -182,7 +190,7 @@ class App(tk.Tk):
         def done(traveled):
             self.positions.append(traveled-stepsize)
             cumulative = sum(self.positions)
-            print(f"Trial {trial_index} finished. Poistion = {traveled:.3f} mm")
+            print(f"Trial {trial_index} finished. Position = {traveled:.3f} mm")
             print(f"Cumulative position = {cumulative:.3f} mm")
             
             #Return paltform down to home +1mm
@@ -253,13 +261,14 @@ class App(tk.Tk):
         self.run_trials()
     
     #do an ensemble of single measurements each with 4 "precision bit" trials
-    def run_position_ensemble(self, verbosity=1):
+    def run_position_ensemble(self, verbosity=1, on_ensemble_done=None):
+        self.ntrial = int(self.nTrialEntry.get())
+        n_measurements = self.ntrial
         print("performing single measurement with N=",self.ntrial)
         self.arduino.send_command(11)
 
         self.final_positions = []
-        self.ntrial = int(self.nTrialEntry.get())
-        n_measurements = self.ntrial
+       
        
         def run_one(idx):
             self.arduino.send_command(11)
@@ -274,12 +283,46 @@ class App(tk.Tk):
                     self.after(2000, lambda: run_one(idx+1))
                 else:
                     print(self.final_positions)
+                    meanpos = np.mean( self.final_positions)
+                    pos_err = np.std( self.final_positions)
+                    print("Ensemble Measurment: ", meanpos, "+/-", pos_err)
+                    if on_ensemble_done:
+                        on_ensemble_done()
+                        
             self.run_trials(on_trials_done=trials_done)
         run_one(0)
-
     
-    #def on_single_meas(self, ntrial):
-        #print("performing single measurement with ntrials=",ntrial)
+    def run_LR_measurements(self, verbosity=1):
+        print("Doing L-R asymmetry measurement")
+        def run_right():
+            print("Running R ensemble")
+            self.run_position_ensemble(1,run_left)
+            
+        def run_left(): 
+            #save final postions to right position
+            self.final_positionsR=self.final_positions
+            #move 20mm left and then do L measurement
+            self.mv_platform('x', self.LRmovement)
+            print("Running L ensemble")
+            self.after(5000, lambda: self.run_position_ensemble(1, LR_complete))
+            
+        def LR_complete():
+            self.final_positionsL=self.final_positions
+            print("L", self.final_positionsL)
+            print("R", self.final_positionsR)
+            meanposL = np.mean( self.final_positionsL)
+            pos_errL = np.std( self.final_positionsL)
+            print("Ensemble Measurment L: ", meanposL, "+/-", pos_errL)
+            meanposR = np.mean( self.final_positionsR)
+            pos_errR = np.std( self.final_positionsR)
+            print("Ensemble Measurment R: ", meanposR, "+/-", pos_errR)
+            LR = meanposL - meanposR
+            LR_err = np.sqrt( pos_errL*pos_errL + pos_errR*pos_errR )
+            print(" L-R asymmetery: ", LR, "+/-", LR_err)
+            
+            self.mv_platform('x', -self.LRmovement)
+        run_right()
+
 
 if __name__ == "__main__":
     arduino = ArduinoController(SERIAL_PORT, BAUD_RATE)
